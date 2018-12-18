@@ -697,3 +697,248 @@ def test_annotation_is_perserved():
 
     assert not result.errors
     assert result.data == expected
+
+
+def test_integer_field_filter_type():
+    class PetType(DjangoObjectType):
+        class Meta:
+            model = Pet
+            interfaces = (Node,)
+            filter_fields = {"age": ["exact"]}
+            fields = ("age",)
+
+    class Query(ObjectType):
+        pets = DjangoFilterConnectionField(PetType)
+
+    schema = Schema(query=Query)
+
+    assert str(schema) == dedent(
+        """\
+        schema {
+          query: Query
+        }
+
+        interface Node {
+          id: ID!
+        }
+
+        type PageInfo {
+          hasNextPage: Boolean!
+          hasPreviousPage: Boolean!
+          startCursor: String
+          endCursor: String
+        }
+
+        type PetType implements Node {
+          age: Int!
+          id: ID!
+        }
+
+        type PetTypeConnection {
+          pageInfo: PageInfo!
+          edges: [PetTypeEdge]!
+        }
+
+        type PetTypeEdge {
+          node: PetType
+          cursor: String!
+        }
+
+        type Query {
+          pets(before: String, after: String, first: Int, last: Int, age: Int): PetTypeConnection
+        }
+    """
+    )
+
+
+def test_other_filter_types():
+    class PetType(DjangoObjectType):
+        class Meta:
+            model = Pet
+            interfaces = (Node,)
+            filter_fields = {"age": ["exact", "isnull", "lt"]}
+            fields = ("age",)
+
+    class Query(ObjectType):
+        pets = DjangoFilterConnectionField(PetType)
+
+    schema = Schema(query=Query)
+
+    assert str(schema) == dedent(
+        """\
+        schema {
+          query: Query
+        }
+
+        interface Node {
+          id: ID!
+        }
+
+        type PageInfo {
+          hasNextPage: Boolean!
+          hasPreviousPage: Boolean!
+          startCursor: String
+          endCursor: String
+        }
+
+        type PetType implements Node {
+          age: Int!
+          id: ID!
+        }
+
+        type PetTypeConnection {
+          pageInfo: PageInfo!
+          edges: [PetTypeEdge]!
+        }
+
+        type PetTypeEdge {
+          node: PetType
+          cursor: String!
+        }
+
+        type Query {
+          pets(before: String, after: String, first: Int, last: Int, age: Int, age_Isnull: Boolean, age_Lt: Int): PetTypeConnection
+        }
+    """
+    )
+
+
+def test_filter_filterset_based_on_mixin():
+    class ArticleFilterMixin(FilterSet):
+        @classmethod
+        def get_filters(cls):
+            filters = super(FilterSet, cls).get_filters()
+            filters.update(
+                {
+                    "viewer__email__in": django_filters.CharFilter(
+                        method="filter_email_in", field_name="reporter__email__in"
+                    )
+                }
+            )
+
+            return filters
+
+        def filter_email_in(cls, queryset, name, value):
+            return queryset.filter(**{name: [value]})
+
+    class NewArticleFilter(ArticleFilterMixin, ArticleFilter):
+        pass
+
+    class NewReporterNode(DjangoObjectType):
+        class Meta:
+            model = Reporter
+            interfaces = (Node,)
+
+    class NewArticleFilterNode(DjangoObjectType):
+        viewer = Field(NewReporterNode)
+
+        class Meta:
+            model = Article
+            interfaces = (Node,)
+            filterset_class = NewArticleFilter
+
+        def resolve_viewer(self, info):
+            return self.reporter
+
+    class Query(ObjectType):
+        all_articles = DjangoFilterConnectionField(NewArticleFilterNode)
+
+    reporter_1 = Reporter.objects.create(
+        first_name="John", last_name="Doe", email="john@doe.com"
+    )
+
+    article_1 = Article.objects.create(
+        headline="Hello",
+        reporter=reporter_1,
+        editor=reporter_1,
+        pub_date=datetime.now(),
+        pub_date_time=datetime.now(),
+    )
+
+    reporter_2 = Reporter.objects.create(
+        first_name="Adam", last_name="Doe", email="adam@doe.com"
+    )
+
+    article_2 = Article.objects.create(
+        headline="Good Bye",
+        reporter=reporter_2,
+        editor=reporter_2,
+        pub_date=datetime.now(),
+        pub_date_time=datetime.now(),
+    )
+
+    schema = Schema(query=Query)
+
+    query = (
+        """
+        query NodeFilteringQuery {
+            allArticles(viewer_Email_In: "%s") {
+                edges {
+                    node {
+                        headline
+                        viewer {
+                            email
+                        }
+                    }
+                }
+            }
+        }
+        """
+        % reporter_1.email
+    )
+
+    expected = {
+        "allArticles": {
+            "edges": [
+                {
+                    "node": {
+                        "headline": article_1.headline,
+                        "viewer": {"email": reporter_1.email},
+                    }
+                }
+            ]
+        }
+    }
+
+    result = schema.execute(query)
+
+    assert not result.errors
+    assert result.data == expected
+
+
+def test_filter_with_union():
+    class ReporterType(DjangoObjectType):
+        class Meta:
+            model = Reporter
+            interfaces = (Node,)
+            filter_fields = ("first_name",)
+
+    class Query(ObjectType):
+        all_reporters = DjangoFilterConnectionField(ReporterType)
+
+        @classmethod
+        def resolve_all_reporters(cls, root, info, **kwargs):
+            ret = Reporter.objects.none() | Reporter.objects.filter(first_name="John")
+
+
+    Reporter.objects.create(first_name="John", last_name="Doe")
+
+    schema = Schema(query=Query)
+
+    query = """
+        query NodeFilteringQuery {
+            allReporters(firstName: "abc") {
+                edges {
+                    node {
+                        firstName
+                    }
+                }
+            }
+        }
+    """
+    expected = {"allReporters": {"edges": []}}
+
+    result = schema.execute(query)
+
+    assert not result.errors
+    assert result.data == expected
