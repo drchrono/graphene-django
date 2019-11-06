@@ -68,22 +68,13 @@ class DjangoConnectionField(ConnectionField):
             return self.model._default_manager
 
     @classmethod
-    def merge_querysets(cls, default_queryset, queryset):
-        if default_queryset.query.distinct and not queryset.query.distinct:
-            queryset = queryset.distinct()
-        elif queryset.query.distinct and not default_queryset.query.distinct:
-            default_queryset = default_queryset.distinct()
-        return queryset & default_queryset
+    def resolve_queryset(cls, connection, queryset, info, args):
+        return connection._meta.node.get_queryset(queryset, info)
 
     @classmethod
-    def resolve_connection(cls, connection, default_manager, args, iterable):
-        if iterable is None:
-            iterable = default_manager
+    def resolve_connection(cls, connection, args, iterable):
         iterable = maybe_queryset(iterable)
         if isinstance(iterable, QuerySet):
-            if iterable is not default_manager:
-                default_queryset = maybe_queryset(default_manager)
-                iterable = cls.merge_querysets(default_queryset, iterable)
             _len = iterable.count()
         else:
             _len = len(iterable)
@@ -107,6 +98,7 @@ class DjangoConnectionField(ConnectionField):
         resolver,
         connection,
         default_manager,
+        queryset_resolver,
         max_limit,
         enforce_first_or_last,
         root,
@@ -135,7 +127,10 @@ class DjangoConnectionField(ConnectionField):
                 args["last"] = min(last, max_limit)
 
         iterable = resolver(root, info, **args)
-        on_resolve = partial(cls.resolve_connection, connection, default_manager, args)
+        if iterable is None:
+            iterable = default_manager
+        iterable = queryset_resolver(connection, iterable, info, args)
+        on_resolve = partial(cls.resolve_connection, connection, args)
 
         if Promise.is_thenable(iterable):
             return Promise.resolve(iterable).then(on_resolve)
@@ -148,6 +143,10 @@ class DjangoConnectionField(ConnectionField):
             parent_resolver,
             self.type,
             self.get_manager(),
+            self.get_queryset_resolver(),
             self.max_limit,
             self.enforce_first_or_last,
         )
+
+    def get_queryset_resolver(self):
+        return self.resolve_queryset
