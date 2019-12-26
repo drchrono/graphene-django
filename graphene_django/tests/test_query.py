@@ -1,23 +1,23 @@
 import base64
 import datetime
 
+import graphene
 import pytest
 from django.db import models
-from django.utils.functional import SimpleLazyObject
-from py.test import raises
-
 from django.db.models import Q
 
 from graphql_relay import to_global_id
 import graphene
+from django.utils.functional import SimpleLazyObject
 from graphene.relay import Node
+from py.test import raises
 
-from ..utils import DJANGO_FILTER_INSTALLED
-from ..compat import MissingType, JSONField
+from ..compat import JSONField, MissingType
 from ..fields import DjangoConnectionField
-from ..types import DjangoObjectType
 from ..settings import graphene_settings
-from .models import Article, CNNReporter, Reporter, Film, FilmDetails
+from ..types import DjangoObjectType
+from ..utils import DJANGO_FILTER_INSTALLED
+from .models import Article, CNNReporter, Film, FilmDetails, Reporter
 
 pytestmark = pytest.mark.django_db
 
@@ -661,7 +661,7 @@ def test_should_error_if_first_is_greater_than_max():
     assert len(result.errors) == 1
     assert str(result.errors[0]) == (
         "Requesting 101 records on the `allReporters` connection "
-        "exceeds the `first` limit of 100 records."
+        "exceeds the limit of 100 records."
     )
     assert result.data == expected
 
@@ -702,11 +702,182 @@ def test_should_error_if_last_is_greater_than_max():
     assert len(result.errors) == 1
     assert str(result.errors[0]) == (
         "Requesting 101 records on the `allReporters` connection "
-        "exceeds the `last` limit of 100 records."
+        "exceeds the limit of 100 records."
     )
     assert result.data == expected
 
     graphene_settings.RELAY_CONNECTION_ENFORCE_FIRST_OR_LAST = False
+
+
+def test_should_not_error_if_last_and_first_not_greater_than_max():
+    graphene_settings.RELAY_CONNECTION_MAX_LIMIT = 1
+
+    class ReporterType(DjangoObjectType):
+        class Meta:
+            model = Reporter
+            interfaces = (Node,)
+
+    class Query(graphene.ObjectType):
+        all_reporters = DjangoConnectionField(ReporterType)
+
+    r = Reporter.objects.create(
+        first_name="John", last_name="Doe", email="johndoe@example.com", a_choice=1
+    )
+
+    schema = graphene.Schema(query=Query)
+    query = """
+        query NodeFilteringQuery {
+            allReporters(first: 999999, last: 1) {
+                edges {
+                    node {
+                        id
+                    }
+                }
+            }
+        }
+    """
+
+    expected = {"allReporters": {"edges": [{"node": {"id": "UmVwb3J0ZXJUeXBlOjE="}}]}}
+
+    result = schema.execute(query)
+    assert not result.errors
+    assert result.data == expected
+
+    graphene_settings.RELAY_CONNECTION_MAX_LIMIT = 100
+
+
+def test_should_error_if_negative_first():
+    class ReporterType(DjangoObjectType):
+        class Meta:
+            model = Reporter
+            interfaces = (Node,)
+
+    class Query(graphene.ObjectType):
+        all_reporters = DjangoConnectionField(ReporterType)
+
+    schema = graphene.Schema(query=Query)
+    query = """
+        query NodeFilteringQuery {
+            allReporters(first: -100, last: 200) {
+                edges {
+                    node {
+                        id
+                    }
+                }
+            }
+        }
+    """
+
+    expected = {"allReporters": None}
+
+    result = schema.execute(query)
+    assert len(result.errors) == 1
+    assert str(result.errors[0]) == "`first` argument must be positive, got `-100`"
+    assert result.data == expected
+
+
+def test_should_error_if_negative_last():
+    class ReporterType(DjangoObjectType):
+        class Meta:
+            model = Reporter
+            interfaces = (Node,)
+
+    class Query(graphene.ObjectType):
+        all_reporters = DjangoConnectionField(ReporterType)
+
+    schema = graphene.Schema(query=Query)
+    query = """
+        query NodeFilteringQuery {
+            allReporters(first: 200, last: -100) {
+                edges {
+                    node {
+                        id
+                    }
+                }
+            }
+        }
+    """
+
+    expected = {"allReporters": None}
+
+    result = schema.execute(query)
+    assert len(result.errors) == 1
+    assert str(result.errors[0]) == "`last` argument must be positive, got `-100`"
+    assert result.data == expected
+
+
+def test_max_limit_is_zero():
+    graphene_settings.RELAY_CONNECTION_MAX_LIMIT = 0
+
+    class ReporterType(DjangoObjectType):
+        class Meta:
+            model = Reporter
+            interfaces = (Node,)
+
+    class Query(graphene.ObjectType):
+        all_reporters = DjangoConnectionField(ReporterType)
+
+    r = Reporter.objects.create(
+        first_name="John", last_name="Doe", email="johndoe@example.com", a_choice=1
+    )
+
+    schema = graphene.Schema(query=Query)
+    query = """
+        query NodeFilteringQuery {
+            allReporters(first: 99999999) {
+                edges {
+                    node {
+                        id
+                    }
+                }
+            }
+        }
+    """
+
+    expected = {"allReporters": {"edges": [{"node": {"id": "UmVwb3J0ZXJUeXBlOjE="}}]}}
+
+    result = schema.execute(query)
+    assert not result.errors
+    assert result.data == expected
+
+    graphene_settings.RELAY_CONNECTION_MAX_LIMIT = 100
+
+
+def test_max_limit_is_none():
+    graphene_settings.RELAY_CONNECTION_MAX_LIMIT = None
+
+    class ReporterType(DjangoObjectType):
+        class Meta:
+            model = Reporter
+            interfaces = (Node,)
+
+    class Query(graphene.ObjectType):
+        all_reporters = DjangoConnectionField(ReporterType)
+
+    r = Reporter.objects.create(
+        first_name="John", last_name="Doe", email="johndoe@example.com", a_choice=1
+    )
+
+    schema = graphene.Schema(query=Query)
+    query = """
+        query NodeFilteringQuery {
+            allReporters(first: 99999999) {
+                edges {
+                    node {
+                        id
+                    }
+                }
+            }
+        }
+    """
+
+    expected = {"allReporters": {"edges": [{"node": {"id": "UmVwb3J0ZXJUeXBlOjE="}}]}}
+
+    result = schema.execute(query)
+    assert not result.errors
+    assert result.data == expected
+
+    graphene_settings.RELAY_CONNECTION_MAX_LIMIT = 100
 
 
 def test_should_query_promise_connectionfields():
